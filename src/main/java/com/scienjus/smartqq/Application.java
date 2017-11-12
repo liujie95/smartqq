@@ -2,9 +2,12 @@ package com.scienjus.smartqq;
 
 import com.scienjus.smartqq.callback.MessageCallback;
 import com.scienjus.smartqq.client.SmartQQClient;
-import com.scienjus.smartqq.model.*;
+import com.scienjus.smartqq.model.Category;
+import com.scienjus.smartqq.model.DiscussMessage;
+import com.scienjus.smartqq.model.Friend;
+import com.scienjus.smartqq.model.GroupMessage;
+import com.scienjus.smartqq.model.Message;
 
-import java.io.IOException;
 import java.util.List;
 
 /**
@@ -39,11 +42,18 @@ public class Application {
                 System.out.println("————" + friend.getNickname());
             }
         }
-        //使用后调用close方法关闭，你也可以使用try-with-resource创建该对象并自动关闭
-        try {
-            client.close();
-        } catch (IOException e) {
-            e.printStackTrace();
+        while (true) {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
         }
+        //使用后调用close方法关闭，你也可以使用try-with-resource创建该对象并自动关闭
+//        try {
+//            client.close();
+//        } catch (IOException e) {
+//            e.printStackTrace();
+//        }
     }
 }

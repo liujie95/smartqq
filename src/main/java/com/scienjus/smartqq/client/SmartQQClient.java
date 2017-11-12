@@ -5,7 +5,22 @@ import com.alibaba.fastjson.JSONArray;
 import com.alibaba.fastjson.JSONObject;
 import com.scienjus.smartqq.callback.MessageCallback;
 import com.scienjus.smartqq.constant.ApiURL;
-import com.scienjus.smartqq.model.*;
+import com.scienjus.smartqq.model.Category;
+import com.scienjus.smartqq.model.Discuss;
+import com.scienjus.smartqq.model.DiscussInfo;
+import com.scienjus.smartqq.model.DiscussMessage;
+import com.scienjus.smartqq.model.DiscussUser;
+import com.scienjus.smartqq.model.Font;
+import com.scienjus.smartqq.model.Friend;
+import com.scienjus.smartqq.model.FriendStatus;
+import com.scienjus.smartqq.model.Group;
+import com.scienjus.smartqq.model.GroupInfo;
+import com.scienjus.smartqq.model.GroupMessage;
+import com.scienjus.smartqq.model.GroupUser;
+import com.scienjus.smartqq.model.Message;
+import com.scienjus.smartqq.model.Recent;
+import com.scienjus.smartqq.model.Result;
+import com.scienjus.smartqq.model.UserInfo;
 import net.dongliu.requests.Client;
 import net.dongliu.requests.HeadOnlyRequestBuilder;
 import net.dongliu.requests.Response;
@@ -14,14 +29,17 @@ import net.dongliu.requests.exception.RequestException;
 import net.dongliu.requests.struct.Cookie;
 import org.apache.log4j.Logger;
 
-import java.awt.Desktop;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
-import java.util.*;
-
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * Api客户端.
@@ -37,7 +55,7 @@ public class SmartQQClient implements Closeable {
 
     //发生ngnix 404 时的重试次数
     private static int retryTimesOnFailed = 3;
-    
+
     //消息id，这个好像可以随便设置，所以设成全局的
     private static long MESSAGE_ID = 43690001;
 
@@ -64,30 +82,35 @@ public class SmartQQClient implements Closeable {
 
     //线程开关
     private volatile boolean pollStarted;
-
+    private volatile boolean closed;
 
     public SmartQQClient(final MessageCallback callback) {
         this.client = Client.pooled().maxPerRoute(5).maxTotal(10).build();
         this.session = client.session();
-        login();
         if (callback != null) {
-            this.pollStarted = true;
+            this.pollStarted = false;
             new Thread(new Runnable() {
                 @Override
                 public void run() {
                     while (true) {
+                        if (closed) {
+                            LOGGER.info("break pollMessage");
+                            break;
+                        }
                         if (!pollStarted) {
-                            return;
+                            sleep(1);
+                            LOGGER.info("skip pollMessage");
+                            continue;
                         }
                         try {
                             pollMessage(callback);
                         } catch (RequestException e) {
                             //忽略SocketTimeoutException
                             if (!(e.getCause() instanceof SocketTimeoutException)) {
-                                LOGGER.error(e.getMessage());
+                                LOGGER.error("pollMessage err " + e.getMessage());
                             }
                         } catch (Exception e) {
-                            LOGGER.error(e.getMessage());
+                            LOGGER.error("pollMessage err " + e.getMessage());
                         }
                     }
                 }
@@ -98,39 +121,45 @@ public class SmartQQClient implements Closeable {
     /**
      * 登录
      */
-    private void login() {
-        getQRCode();
-        String url = verifyQRCode();
-        getPtwebqq(url);
-        getVfwebqq();
-        getUinAndPsessionid();
-        getFriendStatus(); //修复Api返回码[103]的问题
-        //登录成功欢迎语
-        UserInfo userInfo = getAccountInfo();
-        LOGGER.info(userInfo.getNick() + "，欢迎！");
+    public Result<UserInfo> login() {
+        try {
+            Result<String> urlRes = verifyQRCode();
+            if (!urlRes.isSuccess()) {
+                return new Result<>(urlRes.getCode(), urlRes.getMsg());
+            }
+            String url = urlRes.getData();
+            getPtwebqq(url);
+            getVfwebqq();
+            getUinAndPsessionid();
+            getFriendStatus(); //修复Api返回码[103]的问题
+            UserInfo userInfo = getAccountInfo();
+            return new Result<UserInfo>().setData(userInfo);
+        } catch (Exception e) {
+            return new Result<>(-1, e.getMessage());
+        }
     }
 
     //登录流程1：获取二维码
-    private void getQRCode() {
-        LOGGER.debug("开始获取二维码");
-
+    //返回文件路径
+    public Result<String> getQRCode() {
         //本地存储二维码图片
         String filePath;
         try {
-            filePath = new File("qrcode.png").getCanonicalPath();
-        } catch (IOException e) {
-            throw new IllegalStateException("二维码保存失败");
-        }
-        Response response = session.get(ApiURL.GET_QR_CODE.getUrl())
-                .addHeader("User-Agent", ApiURL.USER_AGENT)
-                .file(filePath);
-        for (Cookie cookie : response.getCookies()) {
-            if (Objects.equals(cookie.getName(), "qrsig")) {
-                qrsig = cookie.getValue();
-                break;
+            filePath = File.createTempFile("qrcode" + System.currentTimeMillis(), ".png").getCanonicalPath();
+            Response response = session.get(ApiURL.GET_QR_CODE.getUrl())
+                    .addHeader("User-Agent", ApiURL.USER_AGENT)
+                    .file(filePath);
+            for (Cookie cookie : response.getCookies()) {
+                if (Objects.equals(cookie.getName(), "qrsig")) {
+                    qrsig = cookie.getValue();
+                    break;
+                }
             }
+            return new Result<String>().setData(filePath);
+        } catch (Exception e) {
+            LOGGER.error(e.getMessage(), e);
+            return new Result<>(-1, "获取二维码失败 " + e.getMessage());
         }
-        LOGGER.info("二维码已保存在 " + filePath + " 文件中，请打开手机QQ并扫描二维码");
     }
 
     //用于生成ptqrtoken的哈希函数
@@ -142,28 +171,26 @@ public class SmartQQClient implements Closeable {
     }
 
     //登录流程2：校验二维码
-    private String verifyQRCode() {
-        LOGGER.debug("等待扫描二维码");
-
-        //阻塞直到确认二维码认证成功
-        while (true) {
-            sleep(1);
+    private Result<String> verifyQRCode() {
+        if (qrsig == null) {
+            return new Result<>(1, "请先扫描二维码");
+        }
+        for (int i = 0; i < 180; i++) {
             Response<String> response = get(ApiURL.VERIFY_QR_CODE, hash33(qrsig));
             String result = response.getBody();
             if (result.contains("成功")) {
                 for (String content : result.split("','")) {
                     if (content.startsWith("http")) {
-                        LOGGER.info("正在登录，请稍后");
-
-                        return content;
+                        return new Result<String>().setData(content);
                     }
                 }
             } else if (result.contains("已失效")) {
-                LOGGER.info("二维码已失效，尝试重新获取二维码");
-                getQRCode();
+                return new Result<>(2, result);
             }
+            System.out.println(result);
+            sleep(1);
         }
-
+        return new Result<>(3, "等待扫描二维码超时");
     }
 
     //登录流程3：获取ptwebqq
@@ -182,7 +209,7 @@ public class SmartQQClient implements Closeable {
         int retryTimes4Vfwebqq = retryTimesOnFailed;
         while (response.getStatusCode() == 404 && retryTimes4Vfwebqq > 0) {
             response = get(ApiURL.GET_VFWEBQQ, ptwebqq);
-            retryTimes4Vfwebqq--; 
+            retryTimes4Vfwebqq--;
         }
         this.vfwebqq = getJsonObjectResult(response).getString("vfwebqq");
     }
@@ -614,7 +641,7 @@ public class SmartQQClient implements Closeable {
         if (url.getReferer() != null) {
             request.addHeader("Referer", url.getReferer());
         }
-        return request.text(StandardCharsets.UTF_8); 
+        return request.text(StandardCharsets.UTF_8);
     }
 
     //发送post请求
@@ -674,7 +701,7 @@ public class SmartQQClient implements Closeable {
         } else if (retCode != 0) {
             switch (retCode) {
                 case 103: {
-                    LOGGER.error("请求失败，Api返回码[103]。你需要进入http://w.qq.com，检查是否能正常接收消息。如果可以的话点击[设置]->[退出登录]后查看是否恢复正常"); 
+                    LOGGER.error("请求失败，Api返回码[103]。你需要进入http://w.qq.com，检查是否能正常接收消息。如果可以的话点击[设置]->[退出登录]后查看是否恢复正常");
                     break;
                 }
                 case 100100: {
@@ -731,9 +758,22 @@ public class SmartQQClient implements Closeable {
         return V1;
     }
 
+    public long getUin() {
+        return uin;
+    }
+
+    public boolean isPollStarted() {
+        return pollStarted;
+    }
+
+    public void setPollStarted(boolean pollStarted) {
+        this.pollStarted = pollStarted;
+    }
+
     @Override
     public void close() throws IOException {
         this.pollStarted = false;
+        this.closed = true;
         if (this.client != null) {
             this.client.close();
         }
